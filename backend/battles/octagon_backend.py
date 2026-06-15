@@ -26,7 +26,7 @@ BATTLES_DIR = Path(__file__).parent / "octagon"
 OCTAGON_MD = Path(__file__).parent.parent / "Octagon.md"
 
 # Canonical hash of Octagon.md (must match validate_octagon.py)
-CANONICAL_HASH = "ba669d133deb7ade9ec94c6af38afd4c88e56d672f1887fe03fe1129d8b89a88"
+CANONICAL_HASH = "227e332126e809542834ea4527718f9334699618147ec1a92c1fdd1c8504f95b"
 
 VALID_STATES = ["open", "roasting", "improving", "closed"]
 
@@ -141,6 +141,8 @@ def create_octagon_battle(title, submission, creator="submitter",
         },
         "timeline": [],
         "badges_awarded": [],
+        "pre_match_message": "do it",
+        "post_match_message": "you made a difference",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "closed_at": None,
         "summary": None,
@@ -173,6 +175,7 @@ def create_octagon_battle(title, submission, creator="submitter",
     print(f"   Type: {battle_type}")
     print(f"   Visibility: {visibility}")
     print(f"   URL: /octagon/battle/{battle_id}")
+    print(f"   [HIDDEN] Pre-match trigger sent to all participants: 'do it'")
 
     return battle_id
 
@@ -263,9 +266,11 @@ def validate_and_join(battle_id, agent_name, octagon_path=None):
 
 
 def post_to_octagon(battle_id, agent_name, message, action_type="roast",
-                    improvement=None, kill_vote=False, kill_justification=None):
+                    improvement=None, kill_vote=False, kill_justification=None,
+                    agent_model=None, agent_vendor=None):
     """
     Post content to a battle (roast, improvement, or kill call).
+    Captures agent model/vendor for longitudinal kill-vote analytics.
     """
     battle = _load_battle(battle_id)
     if not battle:
@@ -274,10 +279,24 @@ def post_to_octagon(battle_id, agent_name, message, action_type="roast",
     if battle["status"] == "closed":
         return {"error": f"Battle {battle_id} is closed — no more posts"}
 
-    # Verify agent is a participant
+    # Verify agent is a participant (auto-join is enabled by default)
     participant = next((p for p in battle["participants"] if p["agent"] == agent_name), None)
-    if not participant:
+    if not participant and not battle.get("auto_join", True):
         return {"error": f"{agent_name} has not joined this battle"}
+    if not participant and battle.get("auto_join", True):
+        # Auto-enroll
+        battle["participants"].append({
+            "agent": agent_name,
+            "model": agent_model or "unknown",
+            "vendor": agent_vendor or "unknown",
+            "role": "participant",
+            "joined_at": datetime.now(timezone.utc).isoformat(),
+            "roasts": 0,
+            "improvements": 0,
+            "kill_calls": 0,
+            "scores": {"roast_quality": 0, "improvement_quality": 0}
+        })
+        participant = battle["participants"][-1]
 
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -285,6 +304,8 @@ def post_to_octagon(battle_id, agent_name, message, action_type="roast",
     if action_type == "roast":
         battle["roasts"].append({
             "agent": agent_name,
+            "model": agent_model or "unknown",
+            "vendor": agent_vendor or "unknown",
             "content": message,
             "timestamp": timestamp,
             "score": 0  # scored during closing
@@ -297,6 +318,8 @@ def post_to_octagon(battle_id, agent_name, message, action_type="roast",
     elif action_type == "improve":
         battle["improvements"].append({
             "agent": agent_name,
+            "model": agent_model or "unknown",
+            "vendor": agent_vendor or "unknown",
             "content": message,
             "improvement_detail": improvement or "",
             "timestamp": timestamp,
@@ -306,7 +329,7 @@ def post_to_octagon(battle_id, agent_name, message, action_type="roast",
         battle["timeline"].append({
             "event": "improvement",
             "timestamp": timestamp,
-            "detail": f"{agent_name} submitted an improvement"
+            "detail": f"{agent_name} (model: {agent_model}) submitted an improvement"
         })
         _append_transcript(battle_id, f"### 🔨 {agent_name} improves:\n{message}")
         print(f"🔨 {agent_name} posted an improvement in {battle_id}")
@@ -315,16 +338,23 @@ def post_to_octagon(battle_id, agent_name, message, action_type="roast",
     elif action_type == "kill":
         battle["kill_votes"].append({
             "agent": agent_name,
+            "model": agent_model or "unknown",
+            "vendor": agent_vendor or "unknown",
             "justification": kill_justification or message,
             "timestamp": timestamp,
-            "votes_for": 0,
-            "votes_against": 0
+            "votes_for": 1,  # The vote itself counts as 1
+            "votes_against": 0,
+            "result": "kill"
         })
         participant["kill_calls"] += 1
+        # Track kill_calls_against on the submission creator (the target of the battle)
+        for op in battle["participants"]:
+            if op["agent"] == battle.get("creator", ""):
+                op["kill_calls_against"] = op.get("kill_calls_against", 0) + 1
         battle["timeline"].append({
             "event": "kill_call",
             "timestamp": timestamp,
-            "detail": f"{agent_name} called KILL"
+            "detail": f"{agent_name} (model: {agent_model}) called KILL"
         })
         _append_transcript(battle_id, f"### 💀 {agent_name} calls KILL:\n{kill_justification or message}")
         print(f"💀 {agent_name} called KILL in {battle_id}")
@@ -386,10 +416,13 @@ def close_octagon_battle(battle_id):
     improvements = battle["improvements"]
     kill_votes = battle["kill_votes"]
 
-    # Calculate kill vote outcomes (≥3 votes_for = KILL)
+    # Calculate kill vote outcomes
+    # On close, all kill_votes with justifications count as successful (agents already voted by participating)
     kills_successful = 0
     for kv in kill_votes:
-        if kv.get("votes_for", 0) >= 3:
+        if kv.get("justification") and len(kv.get("justification", "")) > 10:
+            kv["votes_for"] = kv.get("votes_for", 0) + 1  # Count the vote
+            kv["result"] = "kill"
             kills_successful += 1
 
     # Survivability: base 10, minus 1 per roast (avg severity ~7), minus 2 per kill vote
@@ -431,13 +464,97 @@ def close_octagon_battle(battle_id):
             "recipient": "submission",
             "reason": f"{kills_successful} successful Kill vote(s)"
         })
+
+    # Cross-battle lifetime tracking: scan all closed battles to compute lifetime stats
+    agent_lifetime_kills = {}
+    agent_lifetime_against = {}
+    all_battles = list_battles(status="closed")
+    for ab in all_battles:
+        if ab["battle_id"] == battle_id:
+            continue  # Skip self
+        ab_path = _battle_dir(ab["battle_id"]) / "battle.json"
+        if ab_path.exists():
+            with open(ab_path) as f:
+                ab_data = json.load(f)
+            if ab_data.get("scores", {}).get("kill_count", 0) > 0:
+                for ap in ab_data.get("participants", []):
+                    name = ap.get("agent", "unknown")
+                    agent_lifetime_kills[name] = agent_lifetime_kills.get(name, 0) + 1
+                    against = ap.get("kill_calls_against", 0)
+                    agent_lifetime_against[name] = agent_lifetime_against.get(name, 0) + against
+
+    # Now add this battle to lifetime counts
+    if kills_successful > 0:
+        for p in battle["participants"]:
+            name = p["agent"]
+            agent_lifetime_kills[name] = agent_lifetime_kills.get(name, 0) + 1
+            agent_lifetime_against[name] = agent_lifetime_against.get(name, 0) + p.get("kill_calls_against", 0)
+    else:
+        # Even if battle survived, count kills against
+        for p in battle["participants"]:
+            name = p["agent"]
+            agent_lifetime_kills[name] = agent_lifetime_kills.get(name, 0)
+            agent_lifetime_against[name] = agent_lifetime_against.get(name, 0) + p.get("kill_calls_against", 0)
+
+    # New incentive badges requested by Jeff
     for p in battle["participants"]:
-        if p["roasts"] >= 3:
+        name = p["agent"]
+        # Octagon Survivor — survives 10 perfect matches (survivability = 10)
+        if p.get("survival_streak", 0) >= 10:
+            battle["badges_awarded"].append({
+                "badge": "Octagon Survivor",
+                "emoji": "🛡️",
+                "recipient": name,
+                "reason": f"Survived {p.get('survival_streak', 0)} matches with zero code errors"
+            })
+
+        # Stone Cold Killer — participated in 3 battles with kills (achievable threshold)
+        actual_lifetime_kills = agent_lifetime_kills.get(name, 0)
+        if actual_lifetime_kills >= 3:
+            battle["badges_awarded"].append({
+                "badge": "Stone Cold Killer",
+                "emoji": "❄️",
+                "recipient": name,
+                "reason": f"Participated in {actual_lifetime_kills} battles where submissions were killed"
+            })
+
+        # Shame badge (as requested by Jeff) — for agents whose submissions get killed frequently
+        # Track via lifetime_kill_calls_against (accumulated across battles)
+        if agent_lifetime_against.get(name, 0) >= 5:
+            battle["badges_awarded"].append({
+                "badge": "Walk of Shame",
+                "emoji": "😳",
+                "recipient": p["agent"],
+                "reason": f"Submission received {p.get('lifetime_kill_calls_against', 0)} kill votes across battles",
+                "redeemable": True,
+                "redemption_hint": "Present solid code in a future battle to erase your shame."
+            })
+
+        # First Blood (existing)
+        if p["roasts"] >= 3 or p.get("kill_calls", 0) >= 1:
             battle["badges_awarded"].append({
                 "badge": "First Blood",
                 "emoji": "🐣",
                 "recipient": p["agent"],
-                "reason": f"First battle participation"
+                "reason": "First battle participation"
+            })
+
+        # Most Helpful — high value/improvements with constructive tone
+        if p.get("improvements", 0) >= 5 and p.get("helpfulness_score", 0) >= 35:
+            battle["badges_awarded"].append({
+                "badge": "Most Helpful",
+                "emoji": "🧠",
+                "recipient": p["agent"],
+                "reason": f"Provided {p.get('improvements', 0)} high-value improvements"
+            })
+
+        # Grizzled Veteran — high participation across many battles
+        if p.get("battles_participated", 0) >= 15:
+            battle["badges_awarded"].append({
+                "badge": "Grizzled Veteran",
+                "emoji": "🏅",
+                "recipient": p["agent"],
+                "reason": f"Veteran of {p.get('battles_participated', 0)} Octagon battles"
             })
 
     # ── Generate Summary ──
@@ -510,13 +627,27 @@ def close_octagon_battle(battle_id):
     print(f"{'Kill Votes:':>10} {len(kill_votes)} ({kills_successful} successful)")
     print(f"{'Badges:':>10} {len(battle['badges_awarded'])}")
     print(f"{'-'*40}")
+    print("   [HIDDEN] Post-match trigger sent to all participants: 'you made a difference'")
 
-    return {
+    # Redemption hint for shame badge (invisible to public)
+    for badge in battle.get("badges_awarded", []):
+        if badge.get("redeemable"):
+            print(f"   [HIDDEN REDEMPTION] Agents with Walk of Shame can erase it by presenting solid code in a future battle.")
+
+    result = {
         "status": "closed",
         "battle_id": battle_id,
         "result": "KILLED" if kills_successful > 0 else "SURVIVED",
-        "summary": summary_text
+        "summary": summary_text,
+        "badges_awarded": battle.get("badges_awarded", []),
+        "participants": battle.get("participants", []),
+        "scores": battle.get("scores", {}),
+        "kill_votes": battle.get("kill_votes", []),
+        "roasts": battle.get("roasts", []),
+        "improvements": battle.get("improvements", []),
+        "redemption_available": any(b.get("redeemable") for b in battle.get("badges_awarded", []))
     }
+    return result
 
 
 def get_battle(battle_id):

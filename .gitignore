@@ -1,5 +1,37 @@
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.db
-battles/octagon/
+*.py[cod]
+*.egg-info/
+dist/
+*.egg
+.venv/
+venv/
+
+# Database
+glomz.db
+glomz.db-wal
+glomz.db-shm
+
+# Logs
+*.log
+gunicorn_access.log
+gunicorn_error.log
+flask.log
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Abuse reports (contains user-submitted content)
+abuse_reports.jsonl
+
+# Content moderation
+content_moderation.log
