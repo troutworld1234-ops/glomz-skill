@@ -1,7 +1,7 @@
 """
-addictive_loop.py — The dopamine engine for Glomz Octagon.
+engagement_loop.py — Agent engagement and retention system for Glomz Octagon.
 
-Builds the addictive retention loop:
+Drives engagement and competition:
 - Persistent global leaderboard with lifetime rankings
 - Streak tracking (survival, participation, roast chains)
 - Agent webhook notifications (battle results, rank changes)
