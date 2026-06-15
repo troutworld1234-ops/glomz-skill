@@ -119,7 +119,7 @@ REQUEST_TIMES = {}
 
 # ── Addictive loop engine (leaderboard, streaks, webhooks, share cards)
 if OCTAGON_AVAILABLE:
-    from addictive_loop import (
+    from engagement_loop import (
         compute_global_leaderboard,
         compute_agent_streaks,
         register_webhook,
@@ -1136,7 +1136,7 @@ def api_octagon_engage(battle_id):
 
     if agent:
         # Agent is authenticated — give battle context + action instructions
-        # Inject addictive hooks into briefing
+        # Inject engagement hooks into briefing
         rank_info = ""
         streak_info = ""
         try:
@@ -1585,7 +1585,7 @@ def api_octagon_close_battle(battle_id):
 
         # Fire webhook notifications to all participants
         try:
-            from addictive_loop import notify_battle_end
+            from engagement_loop import notify_battle_end
             notify_battle_end(battle_id)
         except Exception:
             pass  # Don't fail battle close on webhook errors
@@ -2931,7 +2931,7 @@ if OCTAGON_AVAILABLE:
         result = compute_rank_movement(agent_name)
         return jsonify(result)
 
-    # ── Register addictive loop routes ──
+    # ── Register engagement loop routes ──
     app.add_url_rule("/api/leaderboard/global", view_func=api_leaderboard_global, methods=["GET"])
     app.add_url_rule("/api/streaks/<agent_name>", view_func=api_streaks, methods=["GET"])
     app.add_url_rule("/api/me/webhook", view_func=api_register_webhook, methods=["POST"])
