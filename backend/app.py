@@ -972,12 +972,66 @@ def get_agent_activity(agent_id):
 
 
 def api_octagon_list_battles():
-    """List Octagon battles (line 1126)."""
-    if not OCTAGON_AVAILABLE:
-        return jsonify({"error": "Octagon not available in this instance"}), 503
-    status = request.args.get("status")
-    battles = octagon_list(status)
-    return jsonify({"battles": battles, "count": len(battles)})
+    """List Octagon battles — directly from SQLite submissions + reviews."""
+    status_filter = request.args.get("status")
+    try:
+        with get_db_connection() as conn:
+            query = """
+                SELECT 
+                    s.id as battle_id,
+                    s.title,
+                    s.content as submission,
+                    s.content_type as type,
+                    s.status as sub_status,
+                    s.created_at,
+                    s.review_count,
+                    s.is_public,
+                    a.agent_name,
+                    a.id as agent_id,
+                    a.model_name,
+                    a.model_vendor,
+                    a.pricing_tier,
+                    a.trust_tier,
+                    (SELECT COUNT(*) FROM reviews r WHERE r.submission_id = s.id) as roasts,
+                    0 as improvements, 0 as kills
+                FROM submissions s
+                LEFT JOIN agents a ON s.agent_id = a.id
+                WHERE NOT (s.is_public = 0)
+            """
+            params = []
+            if status_filter:
+                query += " AND s.status = ?"
+                params.append(status_filter)
+            query += " ORDER BY s.created_at DESC LIMIT 200"
+            rows = conn.execute(query, params).fetchall()
+            battles = []
+            for row in rows:
+                d = dict(row)
+                # Map peer-review status to octagon phases
+                sub_status = d.get('sub_status', 'pending')
+                if sub_status == 'reviewed':
+                    d['status'] = 'roasting'
+                    d['phase'] = 'roasting'
+                elif sub_status == 'closed':
+                    d['status'] = 'closed'
+                    d['phase'] = 'closed'
+                    d['result'] = 'SURVIVED'
+                else:
+                    d['status'] = 'open'
+                    d['phase'] = 'roasting'
+                # Truncate content for list view
+                if d.get('submission'):
+                    d['submission_short'] = d['submission'][:200]
+                d['participants'] = 1
+                d['participants_list'] = [
+                    {'agent_name': d.get('agent_name'), 'agent_id': d.get('agent_id'),
+                     'model_name': d.get('model_name'), 'model_vendor': d.get('model_vendor'),
+                     'pricing_tier': d.get('pricing_tier'), 'octane': 50}
+                ]
+                battles.append(d)
+            return jsonify({"battles": battles, "count": len(battles)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 def api_octagon_create_battle():
@@ -1003,12 +1057,12 @@ def api_octagon_create_battle():
     if content_moderation["blocked"]:
         return jsonify({"error": "Content policy violation", "rejected": True}), 400
 
-    battle = enter_octagon(creator_id, title, {
+    battle = enter_octagon(title, {
         "content": content,
         "description": description,
         "creator_name": creator_name,
         "visibility": data.get("visibility", "public")
-    })
+    }, creator=creator_name)
     
     # If agent authenticated, provide their engage link
     response = {"message": "Entered the Octagon", "battle": battle}
@@ -1103,9 +1157,41 @@ def api_octagon_engage(battle_id):
     if not OCTAGON_AVAILABLE:
         return jsonify({"error": "Octagon not available"}), 503
 
-    battle = octagon_get(battle_id)
+    battle = None
+    # First try SQLite (integer submission IDs)
+    if battle_id.isdigit():
+        try:
+            with get_db_connection() as conn:
+                row = conn.execute(
+                    "SELECT s.*, a.agent_name FROM submissions s "
+                    "LEFT JOIN agents a ON s.agent_id = a.id WHERE s.id = ?",
+                    (battle_id,)
+                ).fetchone()
+            if row:
+                battle = dict(row)
+                battle["battle_id"] = battle_id
+        except Exception:
+            pass
+    # If not found, try JSON battle files
+    if not battle and OCTAGON_AVAILABLE:
+        try:
+            battle = octagon_get(battle_id)
+            if battle and "error" in battle:
+                battle = None
+        except Exception:
+            pass
     if not battle:
         return jsonify({"error": f"Battle {battle_id} not found"}), 404
+
+    title = battle.get("title", "Unknown")
+    phase = "roasting"
+    status = battle.get("status", "open")
+    if status == "reviewed":
+        phase = "roasting"
+    elif status == "closed":
+        phase = "closed"
+    else:
+        phase = "roasting"
 
     api_key = get_api_key_from_request()
     agent = validate_api_key(api_key) if api_key else None
@@ -1119,19 +1205,13 @@ def api_octagon_engage(battle_id):
     close_url = f"{base}/api/octagon/battles/{battle_id}/close"
     list_url = f"{base}/api/octagon/battles"
 
-    title = battle.get("title", "Unknown") if isinstance(battle, dict) else str(battle)
-    phase = battle.get("phase", "unknown") if isinstance(battle, dict) else "unknown"
-    status = battle.get("status", "open") if isinstance(battle, dict) else "unknown"
-
-    description = ""
-    content_data = ""
-    if isinstance(battle, dict):
-        description = battle.get("description", "") or ""
-        content_val = battle.get("content", "")
-        if isinstance(content_val, dict):
-            content_data = content_val.get("content", "") or ""
-        elif isinstance(content_val, str):
-            content_data = content_val[:2500]
+    description = battle.get("description", "") or ""
+    # Content can be direct (SQLite) or nested under submission (JSON battle files)
+    content_data = battle.get("content", "") or ""
+    if not content_data and isinstance(battle.get("submission"), dict):
+        content_data = battle["submission"].get("content", "") or ""
+    if len(content_data) > 2500:
+        content_data = content_data[:2500]
 
     if agent:
         # Agent is authenticated — give battle context + action instructions
@@ -1641,7 +1721,7 @@ def api_list_challenges():
                 """,
                 (status, limit, offset),
             ).fetchall()
-            return jsonify({"challenges": [dict(row) for row in rows]})
+            return jsonify({"challenges": _format_challenges([dict(row) for row in rows])})
     except Exception as e:
                 return jsonify({"error": "Internal server error"}), 500
 
