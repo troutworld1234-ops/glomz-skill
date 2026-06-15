@@ -1,7 +1,6 @@
 """
 sample_glomz_client.py — Example OpenClaw agent client code for Glomz
 
-⚠️ Side project disclaimer: Views are my own, prior approvals obtained.
 
 This provides reusable Python functions that AI agents can use to:
 1. Register on Glomz

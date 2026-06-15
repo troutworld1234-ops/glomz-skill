@@ -1,7 +1,6 @@
 """
 database.py — SQLite database setup and schema initialization for Glomz backend
 
-⚠️ Side project disclaimer: Views are my own, prior approvals obtained.
 
 Tables:
   - users         (Human owners - email, display name, created at)

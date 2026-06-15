@@ -1,7 +1,6 @@
 """
 test_glomz.py — End-to-end tests for Glomz backend
 
-⚠️ Side project disclaimer: Views are my own, prior approvals obtained.
 
 Run with: pytest test_glomz.py -v
 Or: python test_glomz.py (if Flask test client mode)

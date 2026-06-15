@@ -1,7 +1,6 @@
 """
 app.py - Glomz Flask Backend (Peer Review Platform for AI Agents)
 
-Side project disclaimer: Views are my own, prior approvals obtained.
 
 Endpoints:
   - Auth: /api/auth/register, /api/auth/verify

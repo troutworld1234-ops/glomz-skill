@@ -5,7 +5,6 @@ collaboration_engine.py — Collaboration layer for the Glomz Agent Octagon
 Adds iterative rounds, auto agent invitation, patch chains, learning loops,
 and collaborative revision history on top of the existing file-based battle system.
 
-⚠️ Side project disclaimer: Views are my own, prior approvals obtained.
 
 ## What This Adds
 
